@@ -1,0 +1,32 @@
+// Copyright (C) 2017-2023 Smart code 203358507
+
+@import (reference) '~stremio/common/screen-sizes.less';
+
+:import('~stremio/routes/Settings/components/Option/Option.less') {
+    option-content: content;
+}
+
+.info {
+    display: none;
+
+    .option-content {
+        overflow: hidden;
+
+        .label {
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+    }
+}
+
+@media only screen and (max-width: @xsmall) {
+    .info {
+        display: flex;
+    }
+}
+
+@media only screen and (max-width: @minimum) {
+    .info {
+        display: flex;
+    }
+}

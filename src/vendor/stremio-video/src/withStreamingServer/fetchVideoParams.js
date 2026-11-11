@@ -1,0 +1,186 @@
+var url = require('url');
+
+function fetchOpensubtitlesParams(streamingServerURL, mediaURL, behaviorHints) {
+    var hash = behaviorHints && typeof behaviorHints.videoHash === 'string' ? behaviorHints.videoHash : null;
+    var size = behaviorHints && isFinite(behaviorHints.videoSize) ? behaviorHints.videoSize : null;
+    if (typeof hash === 'string' && size !== null && isFinite(size)) {
+        return Promise.resolve({ hash: hash, size: size });
+    }
+
+    var queryParams = new URLSearchParams([['videoUrl', mediaURL]]);
+    return fetch(url.resolve(streamingServerURL, '/opensubHash?' + queryParams.toString()))
+        .then(function(resp) {
+            if (resp.ok) {
+                return resp.json();
+            }
+
+            throw new Error(resp.status + ' (' + resp.statusText + ')');
+        })
+        .then(function(resp) {
+            if (resp.error) {
+                throw new Error(resp.error);
+            }
+
+            return {
+                hash: typeof hash === 'string' ?
+                    hash
+                    :
+                    resp.result && typeof resp.result.hash === 'string' ?
+                        resp.result.hash
+                        :
+                        null,
+                size: size !== null && isFinite(size) ?
+                    size
+                    :
+                    resp.result && typeof resp.result.size ?
+                        resp.result.size
+                        :
+                        null
+            };
+        });
+}
+
+function fetchEmbeddedSubtitleSignature(streamingServerURL, mediaURL, probe) {
+    if (
+        probe &&
+        Array.isArray(probe.streams) &&
+        !probe.streams.some(function(stream) { return stream.track === 'subtitle'; })
+    ) {
+        return Promise.resolve({ signature: null, videoFpsMilli: null });
+    }
+    var queryParams = new URLSearchParams([['videoUrl', mediaURL]]);
+    if (probe && probe.format && typeof probe.format.name === 'string') {
+        queryParams.set('container', probe.format.name);
+    }
+    return fetch(url.resolve(streamingServerURL, '/subtitleSignature?' + queryParams.toString()))
+        .then(function(resp) {
+            if (resp.ok) {
+                return resp.json();
+            }
+
+            throw new Error(resp.status + ' (' + resp.statusText + ')');
+        })
+        .then(function(resp) {
+            if (resp.error) {
+                throw new Error(resp.error);
+            }
+            var result = resp.result || {};
+            return {
+                signature: typeof result.signature === 'string' ? result.signature : null,
+                videoFpsMilli: Number.isInteger(result.videoFpsMilli) && result.videoFpsMilli > 0 ?
+                    result.videoFpsMilli
+                    :
+                    null
+            };
+        });
+}
+
+function fetchFilename(streamingServerURL, mediaURL, infoHash, fileIdx, behaviorHints) {
+    if (behaviorHints && typeof behaviorHints.filename === 'string') {
+        return Promise.resolve(behaviorHints.filename);
+    }
+
+    if (infoHash) {
+        // fileIdx -1 means auto-pick; /-1/stats.json has no streamName,
+        // so resolve via engine guessedFileIdx instead.
+        var fileIdxNum = typeof fileIdx === 'string' ? parseInt(fileIdx, 10) : fileIdx;
+        var hasSpecificFileIdx = fileIdxNum !== null && fileIdxNum !== -1 && isFinite(fileIdxNum);
+
+        if (hasSpecificFileIdx) {
+            return fetch(url.resolve(streamingServerURL, '/' + encodeURIComponent(infoHash) + '/' + encodeURIComponent(fileIdx) + '/stats.json'))
+                .then(function(resp) {
+                    if (resp.ok) {
+                        return resp.json();
+                    }
+
+                    throw new Error(resp.status + ' (' + resp.statusText + ')');
+                })
+                .then(function(resp) {
+                    if (!resp || typeof resp.streamName !== 'string') {
+                        throw new Error('Could not retrieve filename from torrent');
+                    }
+
+                    return resp.streamName;
+                });
+        }
+
+        return fetch(url.resolve(streamingServerURL, '/' + encodeURIComponent(infoHash) + '/stats.json'))
+            .then(function(resp) {
+                if (resp.ok) {
+                    return resp.json();
+                }
+
+                throw new Error(resp.status + ' (' + resp.statusText + ')');
+            })
+            .then(function(stats) {
+                if (!stats || !Array.isArray(stats.files)) {
+                    throw new Error('Could not retrieve file list from torrent');
+                }
+
+                // Prefer guessedFileIdx — the file the engine is streaming.
+                var guessed = typeof stats.guessedFileIdx === 'number' ? stats.files[stats.guessedFileIdx] : null;
+                if (guessed && typeof guessed.name === 'string') {
+                    return guessed.name;
+                }
+
+                // Fallback: largest video file (mirrors server's GuessFileIdx for movies).
+                var videoExt = /\.(mp4|mkv|avi|mov|wmv|flv|webm|m4v|mpg|mpeg|ts|m2ts)$/i;
+                var pool = stats.files.filter(function(f) { return f && typeof f.name === 'string' && videoExt.test(f.name); });
+                if (pool.length === 0) {
+                    pool = stats.files.filter(function(f) { return f && typeof f.name === 'string'; });
+                }
+                var largest = pool.reduce(function(best, f) {
+                    return (!best || (f.length || 0) > (best.length || 0)) ? f : best;
+                }, null);
+                if (largest && typeof largest.name === 'string') {
+                    return largest.name;
+                }
+
+                throw new Error('Could not retrieve filename from torrent');
+            });
+    }
+
+    return Promise.resolve(decodeURIComponent(mediaURL.split('/').pop()));
+}
+
+function fetchVideoParams(streamingServerURL, mediaURL, infoHash, fileIdx, behaviorHints, probe) {
+    return Promise.allSettled([
+        fetchOpensubtitlesParams(streamingServerURL, mediaURL, behaviorHints),
+        fetchFilename(streamingServerURL, mediaURL, infoHash, fileIdx, behaviorHints)
+    ]).then(function(results) {
+        var videoStream = probe && Array.isArray(probe.streams) ?
+            probe.streams.find(function(stream) { return stream.track === 'video'; })
+            :
+            null;
+        var frameRate = videoStream && typeof videoStream.frameRate === 'number' && isFinite(videoStream.frameRate) && videoStream.frameRate > 0 ? videoStream.frameRate : null;
+        var duration = probe && probe.format && typeof probe.format.duration === 'number' && isFinite(probe.format.duration) && probe.format.duration > 0 ? probe.format.duration : null;
+        var result = {
+            hash: null,
+            size: null,
+            filename: null,
+            fpsMilli: frameRate !== null ? Math.round(frameRate * 1000) : null,
+            durationMs: duration !== null ? Math.round(duration * 1000) : null,
+            embeddedSubtitleSignature: null
+        };
+
+        if (results[0].status === 'fulfilled') {
+            result.hash = results[0].value.hash;
+            result.size = results[0].value.size;
+        } else if (results[0].reason) {
+            // eslint-disable-next-line no-console
+            console.error(results[0].reason);
+        }
+
+        if (results[1].status === 'fulfilled') {
+            result.filename = results[1].value;
+        } else if (results[1].reason) {
+            // eslint-disable-next-line no-console
+            console.error(results[1].reason);
+        }
+
+        return result;
+    });
+}
+
+module.exports = fetchVideoParams;
+module.exports.fetchEmbeddedSubtitleSignature = fetchEmbeddedSubtitleSignature;

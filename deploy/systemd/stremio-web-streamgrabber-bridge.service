@@ -1,0 +1,30 @@
+[Unit]
+Description=Streamgrabber Bridge for Stremio Web (/streamgrabber/* -> 127.0.0.1:7789)
+After=network.target
+# Only one unit may own port 7789; the old streamgrabber-bridge.service must be stopped and disabled.
+Conflicts=streamgrabber-bridge.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/server/stremio-web-with-streamgrabber
+ExecStart=/home/ubuntu/.nvm/versions/node/v20.20.2/bin/node tools/streamgrabber-bridge.js
+Restart=always
+RestartSec=3
+# Kill the CLI and any browsers it spawned together with the service
+KillMode=control-group
+EnvironmentFile=/etc/streamgrabber-bridge.env
+Environment=NODE_ENV=production
+Environment=PORT=7789
+Environment=PROXY_PUBLIC_PATH=/streamgrabber/proxy
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+MemoryMax=2G
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target
